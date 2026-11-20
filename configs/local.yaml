@@ -1,0 +1,50 @@
+# Local runs on a 4 GB GPU: ReAct, Reflexion, Reflexion + SL and MUSE on 10 unseen tasks
+# (configs/tasks/local_eval.json, hardest first), after pre-deployment on 10 training tasks
+# (configs/tasks/local_train.json), both drawn over all six task types by scripts/sample_tasks.py
+# --seed 0. Every value not set here is default.yaml's (the paper's setup).
+# Every LLM samples at 0.5 and the admissible-command filter is on for every agent, in collection and deployment
+# (both extensions). M_sa reads the actor's layer-14 hidden states (extension); for the paper's M_sa on the
+# same models, retrain M_sa and evaluate MUSE with
+#   self_assessment.input=paper self_assessment.chunk_stride=null self_assessment.adapt_rollouts=none
+#   run.eval_variant=paper_sa
+extends: default.yaml
+
+run:
+  name: local
+  workers: 1
+
+model:
+  name: Qwen/Qwen2.5-1.5B-Instruct   # a 7B model does not fit in 4 GB
+  backend: hf
+  load_in_4bit: true
+  max_model_len: 16384        # without memory the longest actor, world-model and reflection prompts are
+                              # 5.4-5.5k tokens, so 7.5k of memory makes ~13k
+  max_batch_size: 5           # 10 runs out of memory on 4 GB; 5 rollouts are one batch
+  max_batch_tokens: 10000     # split longer calls: 5 rollouts of a 4000-token prompt need 4.2 GB; 14000 (3.6 GB) still
+                              # failed in cuBLAS with Windows apps sharing the GPU; about 3.3 GB peak at 10000
+  merge_adapters: true        # actor and reflector as two merged 4-bit models: decoding 90 vs 180 ms/step
+
+env:
+  keep_task_order: true       # configs/tasks/local_eval.json: hardest first
+
+agent:
+  max_memory_tokens: 7500     # bounds prompt length over 30 collection episodes (the worst case of 29
+                              # reflections at the 256-token limit is ~7.5k)
+  reflection_temperature: 0.5 # greedy reflections copied the previous one 87% of the time
+  admissible_filter: true     # extension, every agent
+
+self_assessment:
+  input: actor                # extension: M_sa on the actor's hidden states given its full context
+  layer: 14                   # best within-task AUROC offline (scripts/analysis/compare_sa.py)
+  chunk_stride: 1             # extension: a training chunk from every step (rollouts start at any step)
+  adapt_rollouts: selected    # extension: the taken imagined rollouts join the deployment update
+
+sft:
+  grad_accum: 2               # 8 gave 2 optimizer steps on 16 successful episodes
+  max_len: 6144               # 4 GB; a 50-step episode + memory + 2-shot prompt
+
+dpo:
+  grad_accum: 4               # enough optimizer steps on few pairs (at most 8 per task)
+  max_len: 6144
+  max_pairs_per_task: 8       # all pairs could reach hundreds per task over 30 episodes; a ~4k-token pair takes
+                              # 1-2 min per epoch on 4 GB, so DPO stays under ~5 h

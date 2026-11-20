@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the paper below."
+title: "MUSE: LLM-based ALFWorld experiments"
+type: software
+authors:
+  - family-names: Pilly
+    given-names: Praveen K.
+repository-code: "https://github.com/ppilly/metacognition-llm"
+license: MIT
+preferred-citation:
+  type: article
+  title: "Metacognition for Unknown Situations and Environments (MUSE)"
+  authors:
+    - family-names: Valiente
+      given-names: Rodolfo
+    - family-names: Pilly
+      given-names: Praveen K.
+  journal: "Neural Networks"
+  volume: 194
+  start: 108131
+  year: 2026
+  doi: "10.1016/j.neunet.2025.108131"

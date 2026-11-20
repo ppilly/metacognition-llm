@@ -1,0 +1,17 @@
+# Table 5: smaller LLM. OpenELM needs remote code and the Llama-2 tokenizer (gated on Hugging Face),
+# and vLLM does not support it, so it runs on the HF backend.
+extends: default.yaml
+
+run:
+  name: openelm3b
+
+model:
+  name: apple/OpenELM-3B-Instruct
+  tokenizer: meta-llama/Llama-2-7b-hf
+  backend: hf
+  trust_remote_code: true
+  max_model_len: 2048         # OpenELM context window; prompts are left-truncated to fit
+  max_batch_size: 16
+
+lora:
+  target_modules: [qkv_proj, out_proj, proj_1, proj_2]

@@ -1,0 +1,8 @@
+# Table 5: less capable LLM.
+extends: default.yaml
+
+run:
+  name: openorca7b
+
+model:
+  name: Open-Orca/Mistral-7B-OpenOrca

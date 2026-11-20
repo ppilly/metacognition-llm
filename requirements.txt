@@ -1,0 +1,15 @@
+# Versions the local runs were tested with (Python 3.10, CUDA GPU). vLLM, for the paper-scale runs,
+# is installed separately (see README, Setup).
+torch==2.5.1
+transformers==5.12.1
+peft==0.21.2
+accelerate==1.15.0
+bitsandbytes==0.50.2
+sentence-transformers==6.2.0
+scikit-learn==1.7.2
+numpy==2.2.6
+PyYAML==6.0.3
+matplotlib==3.10.9
+pytest==9.2.0
+alfworld==0.4.2
+textworld==1.7.0

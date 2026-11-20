@@ -1,0 +1,25 @@
+# Unit tests on CPU. They use tiny in-memory models and synthetic episodes, so they need no GPU,
+# ALFWorld data or model downloads; ALFWorld, bitsandbytes, sentence-transformers and vLLM are
+# imported only where the pipeline uses them, and are left out here. Versions match requirements.txt.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies (CPU)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
+          pip install transformers==5.12.1 peft==0.21.2 accelerate==1.15.0 scikit-learn==1.7.2 \
+            numpy==2.2.6 PyYAML==6.0.3 matplotlib==3.10.9 pytest==9.2.0
+      - name: Run tests
+        run: python -m pytest -q tests

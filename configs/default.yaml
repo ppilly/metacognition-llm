@@ -1,0 +1,193 @@
+# Paper setup for the LLM-based MUSE experiments (Valiente & Pilly, Neural Networks, 2026, Sec. 4).
+# Implementation choices beyond the paper and Supplementary Material are marked "ASSUMPTION" so they
+# can be revisited.
+
+run:
+  name: mistral7b
+  out_dir: runs/${run.name}
+  seed: 0
+  workers: 32                 # tasks run concurrently; LLM calls from all of them are batched
+  eval_variant: null          # a name: eval writes to eval/<agent>+<name>, e.g. MUSE with other M_sa settings
+                              # next to the same baselines; the report shows it as an extra row
+
+model:
+  name: mistralai/Mistral-7B-Instruct-v0.2
+  tokenizer: null             # defaults to model.name
+  backend: vllm               # vllm | hf
+  dtype: bfloat16
+  load_in_4bit: false
+  trust_remote_code: false
+  max_model_len: 32768        # Mistral-7B-Instruct-v0.2 context window (Sec. 4.2)
+  chat_template: false        # ASSUMPTION: completion-style prompting, as in ReAct/Reflexion
+  gpu_memory_utilization: 0.85  # vllm only
+  max_lora_rank: 64             # vllm only
+  max_batch_size: 64            # hf only: max sequences per generate() call
+  max_batch_tokens: null        # hf only: split a call whose sequences x prompt tokens exceed this (GPU memory)
+  merge_adapters: false         # hf only: serve each LoRA adapter as its own merged model; about 2x faster
+                                # decoding than an unmerged adapter, at the memory cost of one model per adapter
+  batch_wait_ms: 20             # how long the batcher waits to group concurrent requests
+
+env:
+  data_dir: ${ALFWORLD_DATA}
+  train_split: valid_seen     # 140 in-distribution tasks (pre-deployment training)
+  eval_split: valid_unseen    # 134 out-of-distribution tasks (deployment)
+  max_steps: 50
+  num_tasks: null             # limit number of tasks (for smoke tests)
+  task_ids: null              # explicit list of task ids (for smoke tests)
+  keep_task_order: false      # run task_ids in the order given instead of sorted by id (tasks are independent,
+                              # so this changes only which finish first, and the draws from the global RNG)
+
+agent:
+  actor_temperature: 0.5      # ASSUMPTION: ReAct/Reflexion/Reflexion + SL actions (collection included) and MUSE's
+                              # rare fallback when no rollout parses; sampled, as MUSE's rollouts are
+                              # (muse.rollout_temperature), so repeated episodes differ. Reflexion's code is greedy (0.0)
+  actor_max_tokens: 256       # Reflexion's code
+  actor_retries: 5            # Reflexion: up to 6 tries, temperature +0.2 each, until the output has at
+  actor_min_chars: 5          # least actor_min_chars non-blank characters
+  reflect_on_success: true    # Sec. 4.1.2: reflection extended to successful outcomes
+  success_reflection: plan    # ASSUMPTION: prompt chosen here. plan: the decisions and actions that
+                              # made the difference, as a concise reusable plan, no examples.
+                              # reflexion: Reflexion's query rewritten for success, with its two
+                              # (failure) examples, which Qwen2.5-1.5B copied after successes.
+                              # plan_strategy: the strategy behind the successful steps.
+                              # plan_all_actions: every essential action in order, worded as in the
+                              # history. plan_grounded: why it succeeded (strategy and reasoning),
+                              # only from what happened, leaving out failed actions (extension). See
+                              # README, "Success-reflection prompt"
+  max_memory: null            # Sec. 4.1.2: all prior reflections and outcomes, for actor and reflector; an int keeps the last k
+  max_memory_tokens: null     # an int drops the oldest reflections (FIFO) until the memory block fits that many
+                              # LLM tokens; applied after max_memory. null: no limit, as in the paper
+  max_failure_memory: null    # extension: an int keeps only the last k failure reflections (every success one
+                              # stays); null: all. The 1.5B reflector imitates the plans just above "New plan:"
+  successes_last: false       # extension: order memory as failures, then successes (each in episode order),
+                              # so the success reflections sit nearest the end of the prompt
+  stop_on_repeat: true        # Reflexion: repeating the previous action ends the episode as a failure
+  force_plan: true            # prefill the first step with "think: To solve the task," (as in every ReAct
+                              # example), so each episode has a plan P_e for M_sa
+  admissible_filter: false    # extension, every agent: an action not among the game's valid commands (ALFWorld's
+                              # admissible commands) is resampled, up to admissible_resamples times (ReAct/Reflexion
+                              # actors), or its rollout dropped (MUSE). If all are invalid, the first is kept
+  admissible_resamples: 4     # 5 samples in all, as MUSE's 5 rollouts
+  action_votes: 1             # extension, ReAct/Reflexion actors: >1 samples this many actions per step (one call, at
+                              # actor_temperature), drops rejected ones (admissible_filter) and takes the majority
+                              # (think steps one choice; ties to the earliest). Best-of-N without a learned scorer
+  reflection_temperature: 0.0
+  reflection_resamples: 0     # extension: if a reflection repeats an earlier one of the task (exactly or >90% similar),
+                              # sample again at reflection_resample_temperature, up to this many times. Greedy
+                              # Qwen2.5-1.5B reflections copied the previous one 87% of the time in collection
+  reflection_resample_temperature: 1.0
+  reflection_max_tokens: 256
+
+muse:
+  num_rollouts: 5             # Sec. 4.1.3
+  rollout_temperature: 0.5    # Sec. 4.1.3
+  rollout_max_tokens: 320     # token budget for a rollout of chunk_size (4) steps; generation stops early at
+                              # a predicted STATUS line, and steps past the 4th are dropped. 4 steps took
+                              # a median of 107 and at most 257 Qwen tokens in collected episodes
+  chunk_size: 4               # action-observation pairs per M_sa chunk and steps per rollout (Sec. 4.1.3)
+  rollout_max_line_chars: 500 # end a rollout whose current line runs past this: an imagined observation looping
+                              # ("a mug 1, a mug 2, ..."). The longest real action/observation line seen is 398
+  selection: best             # best | lowest | random  (MUSE / lowest / random self-assessment controls)
+
+self_assessment:
+  encoder: sentence-transformers/all-MiniLM-L6-v2
+  max_seq_length: 512         # MiniLM's position limit; the library default of 256 truncated ~8% of inputs
+  hidden: [256, 64]           # ASSUMPTION
+  dropout: 0.1                # ASSUMPTION
+  lr: 3.0e-4                  # ASSUMPTION. At 1e-3 with class_balance: weight, held-out loss swung 0.2-0.7
+                              # from epoch to epoch with Qwen2.5-1.5B
+  weight_decay: 1.0e-4
+  epochs: 60                  # ASSUMPTION: early stopping (below) picks the epoch
+  batch_size: 256
+  val_fraction: 0.2           # training tasks held out to check M_sa generalizes and to measure forgetting
+  val_tasks: mixed            # mixed: held-out tasks drawn only from those with both successful and failed
+                              # episodes (val_fraction of them, at least one), so held-out AUROC exists;
+                              # random: from all tasks (which can leave held-out tasks with no successes)
+  early_stop: true            # ASSUMPTION: pre-deployment training keeps the epoch with the best held-out
+                              # within-task AUROC (needs a held-out task with both outcomes); adaptation runs
+                              # all its epochs
+  input: paper                # paper: Z = E(I), S = E(P_e, chunk) from the encoder above (Eq. 6). actor
+                              # (extension, hf backend only): the actor LLM's hidden states (`layer`) over the chunk,
+                              # given its full context (World Model prompt, memory, earlier steps); saved to
+                              # models/sa_actor
+  layer: null                 # input: actor only. Hidden states of decoder layer k (1-based, before any norm);
+                              # null = the final layer, after the model's last norm
+  standardize: false          # true: scale each input feature to zero mean and unit variance over the
+                              # pre-deployment training chunks (kept through adaptation). Lowered within-task
+                              # AUROC for every input offline (scripts/analysis/compare_sa.py)
+  class_balance: weight       # ASSUMPTION: successful chunks are few (~6% with Qwen2.5-1.5B). weight: BCE weights
+                              # them by #failed / #successful in each epoch; sample: redraw them to match
+                              # the failed ones; none: plain BCE. Both balance options inflate the scores'
+                              # level, not their order
+  chunk_stride: null          # training chunks (pre-deployment and adaptation) start every chunk_stride steps.
+                              # null = muse.chunk_size: non-overlapping, as in the paper (Sec. 4.1.3). 1 is an
+                              # extension: a chunk from every step, as rollouts start at any step
+  adapt_lr: 1.0e-3            # ASSUMPTION: deployment update of g_eta only (Sec. 4.2); null = same as lr
+  adapt_epochs: 30            # ASSUMPTION; null = same as epochs. An epoch is one pass over the new chunks plus
+                              # replay, and adaptation runs all of them (no early stopping)
+  adapt_new_fraction: 0.2     # ASSUMPTION: share of new-task examples in each adaptation epoch, the rest replayed
+                              # from the buffer; class_balance applies to the mix
+  adapt_rollouts: none        # none: executed chunks only, as in the paper. Extension: the adaptation episodes'
+                              # imagined rollouts, whole (4 imagined steps with their observations), join the
+                              # executed chunks as new-task examples, labelled with their episode's outcome.
+                              # selected: the rollout taken at each step; all: every candidate
+
+world_model:                  # extension: a separate LoRA adapter writes MUSE's rollouts (the paper prompts the
+                              # actor M_a as the World Model, Sec. 4.1.3); train-wm, after train-sft
+  enabled: false
+  name: world_model           # adapter directory under models/
+  obs_weight: 0.3             # loss = action term + obs_weight x observation loss (all episodes), each
+                              # averaged over its own tokens
+  action_term: ce             # ce: action loss on the successful episodes (as SFT). anchor: anchor_weight x the
+                              # mean squared change of every episode's action-token log-probs from the actor's,
+                              # so the actions are held in place rather than retrained on the same successes
+  anchor_weight: 1.0
+  lr: 5.0e-5                  # continues from the actor adapter
+  epochs: 1
+  max_failed: 60              # seeded sample of failed episodes (null: all); ~45 s per episode on 4 GB
+  max_label_steps: null       # split an episode into items of at most this many labelled steps (null: whole)
+  val_fraction: 0.1           # held-out training tasks
+  val_max: 12                 # held-out episodes, half successful where possible (checks run every val_every steps)
+  val_every: 5                # optimizer steps between held-out checks
+  action_tolerance: 0.05      # keep the check with the lowest held-out observation loss whose action loss is
+                              # within 5% of the actor's (step 0)
+
+protocol:
+  adapt_episodes: 5           # Sec. 4.2
+  test_episodes: 5            # Sec. 4.2
+  test_independent: true      # ASSUMPTION: the No Adaptation and Adaptation test episodes are independent
+                              # samples: no reflections from earlier test episodes, so the Adaptation ones see
+                              # only the adaptation episodes' reflections. false: a sequence, reflections accumulate
+  skip_noadapt: false         # true: no No Adaptation episodes (adaptation and test only), to save time
+  fail_penalty_steps: 100     # Sec. 4.2.1 time-to-completion penalty
+
+collect:
+  num_episodes: 30            # ASSUMPTION: Reflexion episodes per training task, all run (Alg. 3's "max. training
+                              # episodes"). With 10, 4 of 12 tasks had no success with
+                              # Qwen2.5-1.5B; more attempts give the actor more successes to imitate
+
+lora:                         # the paper uses LoRA for M_a and M_rx (Sec. 4.1.3); settings chosen here
+  r: 16                       # ASSUMPTION
+  alpha: 32                   # ASSUMPTION
+  dropout: 0.05               # ASSUMPTION
+  target_modules: all-linear  # ASSUMPTION
+
+sft:                          # Actor M_a: SFT on successful episodes (Sec. 4.1.3); no hyper-parameters given
+  lr: 1.0e-4                  # ASSUMPTION
+  epochs: 2                   # ASSUMPTION
+  grad_accum: 8               # ASSUMPTION: effective batch 8; micro-batch size is 1 (one episode / pair)
+  max_len: 8192
+  include_fewshot: true       # keep the 2-shot examples in the SFT context so train matches inference
+  warmup_ratio: 0.03          # ASSUMPTION
+  val_fraction: 0.1           # training tasks held out for a validation loss curve
+
+dpo:                          # Reflection LLM M_rx: DPO on reflection preferences (Sec. 4.1.3); no hyper-parameters given
+  beta: 0.1                   # ASSUMPTION
+  lr: 5.0e-5                  # ASSUMPTION
+  epochs: 2                   # ASSUMPTION
+  grad_accum: 8               # ASSUMPTION: effective batch 8; micro-batch size is 1 (one episode / pair)
+  max_len: 8192
+  warmup_ratio: 0.03          # ASSUMPTION
+  fallback: true              # per task: success->success as positives / fail->fail as negatives when none exist
+  max_pairs_per_task: null    # null = all positive x negative combinations within a task
+  val_fraction: 0.1           # training tasks held out for validation loss / reward accuracy

@@ -1,0 +1,27 @@
+/runs/
+/data/
+__pycache__/
+.pytest_cache/
+*.safetensors
+*.pt
+*.bin
+*.pth
+*.gguf
+*.pkl
+*.ckpt
+*.pyc
+.venv/
+
+# Stray logs, local secrets and scratch folders
+*.log
+nohup.out
+.env
+scratch/
+tmp/
+
+# Extras
+*.egg-info
+build/
+dist/
+.DS_Store
+.vscode/
